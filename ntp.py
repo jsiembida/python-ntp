@@ -506,13 +506,20 @@ class NtpArena:
         *,
         addresses,
         socket_timeout=5.0,
+        precision=PRECISION,
+        tolerance=TOLERANCE,
+        start_randomization=5.0,
         max_poll=None
     ):
         needs_ipv4 = False
         needs_ipv6 = False
         self.peers = {}
         for i in set(addresses):
-            p = NtpAssociation(address=i, max_poll=max_poll)
+            p = NtpAssociation(address=i,
+                    precision=precision,
+                    tolerance=tolerance,
+                    start_randomization=start_randomization,
+                    max_poll=max_poll)
             self.peers[p.address] = p
             if p.ipv6:
                 needs_ipv6 = True
@@ -545,6 +552,7 @@ class NtpArena:
     ):
         log.debug("Query peers")
         i = 0
+        min_poll = 2 ** MINPOLL
         start = time()
         poll_q = sorted(self.peers.values(), key=lambda p: p.poll_t)
         # Polling loop:
@@ -561,15 +569,15 @@ class NtpArena:
             i += 1
             if query_limit is not None and i > query_limit:
                 log.debug("Query limit reached")
-                return 0
+                return min_poll
             t = time()
             if time_limit is not None and t - start > time_limit:
                 log.debug("Time limit reached")
-                return 0
+                return min_poll
             diff = p.poll_t - t
             if diff > 1:
                 log.debug("No more peers to query for now")
-                return diff
+                return max(diff, min_poll)
             s = self.sockv6 if p.ipv6 else self.sockv4
             try:
                 s.sendto(p.prepare_request(), p.address)
@@ -584,7 +592,7 @@ class NtpArena:
             except OSError as e:
                 p.response_error(e)
         poll_q = sorted(self.peers.values(), key=lambda p: p.poll_t)
-        return poll_q[0].poll_t - time()
+        return max(poll_q[0].poll_t - time(), min_poll)
 
     def filter_clocks(self, edges, low, high):
         # Truechimers have their midpoint in the found interval.
