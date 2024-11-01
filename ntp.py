@@ -36,9 +36,8 @@ from time import time, sleep
 VERSION = 4
 TOLERANCE = 15e-6  # 15 us/s (clock drift assumed in RFC)
 PRECISION = -18  # 2**-18 s (again, this is assumed in RFC)
-MINPOLL = 4  # 2**4 = 16 s
-MAXPOLL = 14  # 2**14 = 4.5 h (RFC uses 17 instead of 14)
-BADPOLL = 9   # 2**9 = 1 h
+MINPOLL = 16  # 16 s
+MAXPOLL = 3600  # 1 h
 MAXDISP = 16  # 16 s
 MINDISP = 0.005  # 5 ms
 MAXDIST = 1
@@ -291,7 +290,7 @@ class NtpAssociation:
         port=123,
         precision=PRECISION,
         tolerance=TOLERANCE,
-        start_randomization=0.0,
+        start_randomization=None,
         max_poll=None
     ):
         ip = ip_address(address)
@@ -311,7 +310,9 @@ class NtpAssociation:
         self.calculate_state(t)
         # Don't burst out all queries at once, randomize them within 5s.
         self.poll = MINPOLL
-        self.poll_t = t + random() * start_randomization
+        self.poll_t = t
+        if start_randomization is not None:
+            self.poll_t += random() * start_randomization
         log.info("NTP association %s initialized", self)
         log.debug("%s Scheduled at %s", self, self.poll_t)
 
@@ -331,27 +332,19 @@ class NtpAssociation:
     def __repr__(self):
         return self.__str__()
 
-    def schedule_poll(self, delta, t=None):
+    def schedule_poll(self, t=None):
         if t is None:
             t = time()
 
-        if delta < 0:
-            if self.poll < BADPOLL:
-                # Still "ramping up", so keep doing it.
-                self.poll = min(BADPOLL, self.poll - delta)
-            else:
-                # For failing queries, keep retrying more often
-                # but no more often than at 2**BADPOLL intervals.
-                self.poll = max(BADPOLL, self.poll + delta)
-        elif delta > 0:
-            self.poll = min(MAXPOLL, self.poll + delta)
-
-        interval = 2 ** self.poll
-        interval += random() * interval / 2 - interval / 4
+        self.poll = min(MAXPOLL, self.poll)
         if self.max_poll is not None:
-            interval = min(self.max_poll, interval)
+            self.poll = min(self.max_poll, self.poll)
+        self.poll = max(MINPOLL, self.poll)
+
+        interval = self.poll + random() * self.poll / 2 - self.poll / 4
         self.poll_t = t + interval
-        log.debug("%s Scheduled at %s", self, self.poll_t)
+        self.poll *= 1.5
+        log.debug("%s Scheduled in %s secs at %s", self, interval, self.poll_t)
 
     def calculate_state(self, t=None):
         if t is None:
@@ -434,7 +427,7 @@ class NtpAssociation:
         )
         self.register.append(NtpState(t=t))
         self.calculate_state(t)
-        self.schedule_poll(-1, t)
+        self.schedule_poll(t)
 
     def process_response(self, payload, t=None):
         if t is None:
@@ -489,15 +482,14 @@ class NtpAssociation:
             )
             self.register.append(state)
             self.calculate_state(t)
-            self.schedule_poll(1, t)
             log.debug("%s Update with %s", self, state)
         except NtpUnsynchronizedError:
             self.register.append(NtpState(t=t))
             self.calculate_state(t)
-            self.schedule_poll(-1, t)
         except NtpError as e:
-            self.schedule_poll(-1, t)
             log.info("%s %s", self, e.args[0])
+        finally:
+            self.schedule_poll(t)
 
 
 class NtpArena:
@@ -508,7 +500,7 @@ class NtpArena:
         socket_timeout=5.0,
         precision=PRECISION,
         tolerance=TOLERANCE,
-        start_randomization=0.0,
+        start_randomization=None,
         max_poll=None
     ):
         needs_ipv4 = False
@@ -769,7 +761,7 @@ def argv_parser(progname=None):
         default=None,
         help=(
             "max interval between queries to each NTP server (in seconds)."
-            " By default it is capped at 4.5h +/- 1h."
+            " By default it is capped at 1h +/- 15m."
         )
     )
     return parser
