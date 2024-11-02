@@ -42,7 +42,7 @@ while True:
         print(offset)
     except NtpUnsynchronizedError as e:
         print('problem:', e)
-    sleep(pause)
+    sleep(max(1, pause))
 ```
 
 Lower level API is exposed via `NtpMessage` and `NtpAssociation` classes.
@@ -53,7 +53,7 @@ Lower level API is exposed via `NtpMessage` and `NtpAssociation` classes.
 Keep running and showing NTP time every minute:
 
 ```
-ntp.py --output-interval 60 pool.ntp.org time.nist.gov time.google.com
+ntp.py --output-interval 60 pool.ntp.org time.nist.gov time.google.com time.apple.com
 ```
 
 One shot run, returning offset between local and NTP time:

@@ -545,45 +545,46 @@ class NtpArena:
         log.debug("Query peers")
         i = 0
         start = time()
-        poll_q = sorted(self.peers.values(), key=lambda p: p.poll_t)
-        # Polling loop:
-        #   1. Choose the next peer.
-        #   2. Send a query to it.
-        #   3. Block the thread waiting for a reply.
-        #   4. Process the reply.
-        #   5. Go back to 1.
-        # It is slow, but arguably offers the most precise timing of packets,
-        # as there is nothing else involved apart from kernel sending the query
-        # out and then waking the thread up as soon as the reply arrives.
-        # Especially if that's the only active thread.
-        for p in poll_q:
-            i += 1
-            if query_limit is not None and i > query_limit:
-                log.debug("Query limit reached")
-                return 0
-            t = time()
-            if time_limit is not None and t - start > time_limit:
-                log.debug("Time limit reached")
-                return 0
-            diff = p.poll_t - t
-            if diff > 1:
-                log.debug("No more peers to query for now")
-                return diff
-            s = self.sockv6 if p.ipv6 else self.sockv4
-            try:
-                s.sendto(p.prepare_request(), p.address)
-                while True:
-                    payload, address = s.recvfrom(4096)
-                    t = time()
-                    if address[:2] == p:
-                        p.process_response(payload, t)
-                        if response_callback:
-                            response_callback()
-                        break
-            except OSError as e:
-                p.response_error(e)
-        poll_q = sorted(self.peers.values(), key=lambda p: p.poll_t)
-        return poll_q[0].poll_t - time()
+        while True:
+            poll_q = sorted(self.peers.values(), key=lambda p: p.poll_t)
+            if not poll_q:
+                raise ValueError("No NTP peers found")
+            # Polling loop:
+            #   1. Choose the next peer.
+            #   2. Send a query to it.
+            #   3. Block the thread waiting for a reply.
+            #   4. Process the reply.
+            #   5. Go back to 1.
+            # It is slow, but arguably offers the most precise timing
+            # of packets, as there is nothing else involved apart from kernel
+            # sending the packet out and then waking the thread up as soon as
+            # the reply arrives. Especially if that's the only active thread.
+            for p in poll_q:
+                i += 1
+                t = time()
+                diff = p.poll_t - t
+                if diff > 1:
+                    log.debug("No more peers to query for now")
+                    return diff
+                if query_limit is not None and i > query_limit:
+                    log.debug("Query limit reached")
+                    return diff
+                if time_limit is not None and t - start > time_limit:
+                    log.debug("Time limit reached")
+                    return diff
+                s = self.sockv6 if p.ipv6 else self.sockv4
+                try:
+                    s.sendto(p.prepare_request(), p.address)
+                    while True:
+                        payload, address = s.recvfrom(4096)
+                        t = time()
+                        if address[:2] == p:
+                            p.process_response(payload, t)
+                            if response_callback:
+                                response_callback()
+                            break
+                except OSError as e:
+                    p.response_error(e)
 
     def filter_clocks(self, edges, low, high):
         # Truechimers have their midpoint in the found interval.
@@ -824,6 +825,7 @@ def main():
         addresses=addresses,
         socket_timeout=args.socket_timeout,
         max_poll=args.max_poll_interval,
+        start_randomization=15,
     )
 
     time_limit = None
@@ -846,7 +848,7 @@ def main():
                 if current_t - output_t >= output_interval:
                     output()
                 pause = min(pause, output_interval - current_t + output_t)
-            pause = min(max(pause, 1), 60)
+            pause = max(pause, 1)
             log.debug("Pause %f seconds", pause)
             sleep(pause)
     except StopIteration:
